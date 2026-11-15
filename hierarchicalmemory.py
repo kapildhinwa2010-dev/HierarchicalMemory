@@ -1,20 +1,23 @@
-# HierarchicalMemory - Layered fact memory: chain facts across relation hops
+# HierarchicalMemory - Layered fact memory with level-ordered search
 # Part of the Kapildhinwa2010-dev Toolkit.
 
-"""KnowledgeNet - facts, alias derivation and chain reasoning.
+"""Layered fact memory: separate KnowledgeNet per level.
 
-Lineage: reserv.dean-part-2 (HELIX). Facts are stored as (subject, predicate,
-object) triples; aliases are derived transitively from equality facts; chain
-reasoning walks predicates to answer multi-hop queries.
+Lineage: reserv.dean-part-2 (HELIX). Facts live in numbered layers
+(0 = hot/fine-grained, higher = coarser). Searches walk layers in order
+and report which layer answered; copy_up promotes a fact to a coarser
+layer.
+
+HONEST LIMITATION: layers are independent stores - there is no automatic
+summarization or consistency between levels; copy_up duplicates, it does
+not move.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-import numpy as np
-
-__all__ = ["Fact", "KnowledgeNet"]
+__all__ = ["Fact", "KnowledgeNet", "HierarchicalMemory"]
 
 
 class Fact:
@@ -44,7 +47,7 @@ class Fact:
 
 
 class KnowledgeNet:
-    """Zero-overhead fact base with alias and chain reasoning."""
+    """Single-layer fact store with indexed queries."""
 
     def __init__(self) -> None:
         self._facts: set = set()
@@ -78,56 +81,53 @@ class KnowledgeNet:
             results = [f for f in results if f.object == obj]
         return sorted(results, key=lambda f: f.as_tuple())
 
-    def derive_aliases(self) -> dict:
-        """Transitive closure of ``same_as`` equality facts."""
-        adjacency: dict = defaultdict(set)
-        for fact in self._facts:
-            if fact.predicate == "same_as":
-                adjacency[fact.subject].add(fact.object)
-                adjacency[fact.object].add(fact.subject)
-        aliases: dict = {}
-        for node in list(adjacency):
-            if node in aliases:
-                continue
-            component = set()
-            stack = [node]
-            while stack:
-                current = stack.pop()
-                if current in component:
-                    continue
-                component.add(current)
-                stack.extend(adjacency[current] - component)
-            canonical = min(component)
-            for member in component:
-                aliases[member] = canonical
-        return aliases
 
-    def chain(self, start: str, predicate: str, max_hops: int = 4) -> list:
-        """Multi-hop walk following ``predicate`` from ``start``."""
-        if max_hops < 1:
-            raise ValueError("max_hops must be >= 1")
-        hops = []
-        current = start
-        seen = {start}
-        for _ in range(max_hops):
-            nxt = [f.object for f in self._by_subject.get(current, []) if f.predicate == predicate]
-            if not nxt:
-                break
-            hops.append(nxt[0])
-            if nxt[0] in seen:
-                break
-            seen.add(nxt[0])
-            current = nxt[0]
-        return hops
+class HierarchicalMemory:
+    """Numbered fact layers searched in level order."""
 
-    def interference(self, query: str, top_k: int = 3) -> list:
-        """Rank facts related to ``query`` by co-occurrence interference."""
-        if top_k < 1:
-            raise ValueError("top_k must be >= 1")
-        scores: dict = {}
-        for fact in self._facts:
-            if query in (fact.subject, fact.object):
-                related = self.query(subject=fact.object) + self.query(obj=fact.subject)
-                scores[fact] = len(related)
-        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0].as_tuple()))
-        return [fact for fact, _ in ranked[:top_k]]
+    def __init__(self, n_levels: int = 3) -> None:
+        if n_levels < 1:
+            raise ValueError("n_levels must be >= 1")
+        self.layers = [KnowledgeNet() for _ in range(int(n_levels))]
+
+    def add(self, level: int, subject: str, predicate: str, obj: str) -> bool:
+        """Add a fact to one layer; returns False if it already exists there."""
+        self._check_level(level)
+        return self.layers[level].add(subject, predicate, obj)
+
+    def _check_level(self, level: int) -> None:
+        if not 0 <= level < len(self.layers):
+            raise ValueError("level must be in [0, {}]".format(len(self.layers) - 1))
+
+    def layer(self, level: int) -> KnowledgeNet:
+        """The KnowledgeNet at ``level``."""
+        self._check_level(level)
+        return self.layers[level]
+
+    def search(self, subject=None, predicate=None, obj=None) -> list:
+        """(level, facts) pairs for the first layers that match, lowest first.
+
+        Walks layers 0..N; returns every layer that has matches. An empty
+        result list means no layer contained the pattern.
+        """
+        hits = []
+        for level, net in enumerate(self.layers):
+            found = net.query(subject=subject, predicate=predicate, obj=obj)
+            if found:
+                hits.append((level, found))
+        return hits
+
+    def copy_up(self, level: int, subject: str, predicate: str, obj: str, to_level: int) -> bool:
+        """Copy a fact from ``level`` to ``to_level`` (duplicate, not move)."""
+        self._check_level(level)
+        self._check_level(to_level)
+        fact = Fact(subject, predicate, obj)
+        if fact not in self.layers[level]._facts:
+            raise KeyError("fact not present at level {}".format(level))
+        return self.layers[to_level].add(subject, predicate, obj)
+
+    def total_facts(self) -> int:
+        return sum(len(net) for net in self.layers)
+
+    def __len__(self) -> int:
+        return len(self.layers)

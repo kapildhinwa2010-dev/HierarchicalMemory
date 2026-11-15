@@ -1,88 +1,84 @@
 import pytest
 
-from hierarchicalmemory import Fact, KnowledgeNet
+from hierarchicalmemory import Fact, HierarchicalMemory, KnowledgeNet
 
 
 def test_fact_basic():
-    fact = Fact("alice", "knows", "bob")
-    assert fact.as_tuple() == ("alice", "knows", "bob")
+    fact = Fact("a", "knows", "b")
+    assert fact.as_tuple() == ("a", "knows", "b")
 
 
 def test_fact_rejects_empty():
     with pytest.raises(ValueError):
-        Fact("", "knows", "bob")
+        Fact("", "knows", "b")
 
 
-def test_fact_equality_and_hash():
-    assert Fact("a", "p", "b") == Fact("a", "p", "b")
-    assert hash(Fact("a", "p", "b")) == hash(Fact("a", "p", "b"))
-    assert Fact("a", "p", "b") != Fact("a", "p", "c")
+def test_layer_add_and_len():
+    mem = HierarchicalMemory(n_levels=2)
+    assert mem.add(0, "a", "knows", "b") is True
+    assert mem.add(0, "a", "knows", "b") is False
+    assert len(mem.layer(0)) == 1
+    assert len(mem) == 2
 
 
-def test_add_and_len():
-    net = KnowledgeNet()
-    assert net.add("a", "knows", "b") is True
-    assert net.add("a", "knows", "b") is False
-    assert len(net) == 1
-
-
-def test_query_pattern():
-    net = KnowledgeNet()
-    net.add("a", "knows", "b")
-    net.add("b", "knows", "c")
-    net.add("a", "likes", "c")
-    assert len(net.query(subject="a")) == 2
-    assert len(net.query(predicate="knows")) == 2
-    assert len(net.query(obj="c")) == 2
-    assert len(net.query(subject="a", predicate="likes")) == 1
-
-
-def test_derive_aliases_transitive():
-    net = KnowledgeNet()
-    net.add("x", "same_as", "y")
-    net.add("y", "same_as", "z")
-    aliases = net.derive_aliases()
-    assert aliases["x"] == aliases["y"] == aliases["z"]
-
-
-def test_derive_aliases_ignores_other_predicates():
-    net = KnowledgeNet()
-    net.add("x", "knows", "y")
-    assert net.derive_aliases() == {}
-
-
-def test_chain_walk():
-    net = KnowledgeNet()
-    net.add("a", "next", "b")
-    net.add("b", "next", "c")
-    net.add("c", "next", "d")
-    assert net.chain("a", "next") == ["b", "c", "d"]
-
-
-def test_chain_respects_max_hops():
-    net = KnowledgeNet()
-    net.add("a", "next", "b")
-    net.add("b", "next", "c")
-    assert net.chain("a", "next", max_hops=1) == ["b"]
-
-
-def test_chain_handles_cycles():
-    net = KnowledgeNet()
-    net.add("a", "next", "b")
-    net.add("b", "next", "a")
-    assert net.chain("a", "next") == ["b"]
-
-
-def test_interference_ranks_related():
-    net = KnowledgeNet()
-    net.add("hub", "knows", "a")
-    net.add("hub", "knows", "b")
-    net.add("lonely", "knows", "c")
-    top = net.interference("hub")
-    assert top and top[0].subject == "hub"
-
-
-def test_chain_rejects_bad_hops():
-    net = KnowledgeNet()
+def test_add_rejects_bad_level():
+    mem = HierarchicalMemory(n_levels=2)
     with pytest.raises(ValueError):
-        net.chain("a", "next", max_hops=0)
+        mem.add(5, "a", "knows", "b")
+
+
+def test_layer_rejects_bad_level():
+    mem = HierarchicalMemory()
+    with pytest.raises(ValueError):
+        mem.layer(-1)
+
+
+def test_constructor_rejects_zero():
+    with pytest.raises(ValueError):
+        HierarchicalMemory(n_levels=0)
+
+
+# --- hierarchical search (HierarchicalMemory-specific) ---
+
+
+def test_search_reports_level():
+    mem = HierarchicalMemory(n_levels=3)
+    mem.add(1, "a", "knows", "b")
+    hits = mem.search(subject="a")
+    assert len(hits) == 1
+    assert hits[0][0] == 1
+
+
+def test_search_lowest_layer_first():
+    mem = HierarchicalMemory(n_levels=2)
+    mem.add(0, "a", "knows", "b")
+    mem.add(1, "a", "knows", "b")
+    hits = mem.search(subject="a")
+    assert [h[0] for h in hits] == [0, 1]
+
+
+def test_search_no_hits():
+    mem = HierarchicalMemory()
+    mem.add(0, "a", "knows", "b")
+    assert mem.search(subject="zzz") == []
+
+
+def test_copy_up_duplicates_fact():
+    mem = HierarchicalMemory(n_levels=2)
+    mem.add(0, "a", "knows", "b")
+    assert mem.copy_up(0, "a", "knows", "b", to_level=1) is True
+    assert len(mem.layer(0)) == 1
+    assert len(mem.layer(1)) == 1
+
+
+def test_copy_up_missing_fact_raises():
+    mem = HierarchicalMemory(n_levels=2)
+    with pytest.raises(KeyError):
+        mem.copy_up(0, "a", "knows", "b", to_level=1)
+
+
+def test_total_facts():
+    mem = HierarchicalMemory(n_levels=2)
+    mem.add(0, "a", "knows", "b")
+    mem.add(1, "c", "knows", "d")
+    assert mem.total_facts() == 2
