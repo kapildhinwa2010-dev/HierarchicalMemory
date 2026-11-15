@@ -46,4 +46,4 @@ jobs:
       - name: Compile and smoke-test package
         run: |
           python -m compileall -q hierarchicalmemory.py tests
-          python -c "from hierarchicalmemory import Fact; print(type(Fact()).__name__)"
+          python -c "from hierarchicalmemory import HierarchicalMemory; m = HierarchicalMemory(); print(type(m).__name__)"
